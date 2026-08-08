@@ -2,6 +2,8 @@
 
 A reasoning-aware LLM performance benchmark over the **OpenAI Responses API**.
 
+English | [中文](README_CN.md)
+
 Measures **TTFT, decode TPS, end-to-end latency, reliability, prompt-caching effect, and reasoning-effort tiers** across any Responses-compatible endpoint — official provider APIs, hosted plans, and routers/gateways — with the same workload, so numbers are comparable.
 
 ## Why this exists
