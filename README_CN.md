@@ -8,10 +8,10 @@
 
 ## 为什么做这个
 
-市面上多数 LLM 测速工具只报一个"tokens/sec"和一个"TTFT"。但这对**推理模型**（DeepSeek、Kimi、GLM、Doubao……）会失效——它们在给出可见答案前，会先输出一大段隐藏的**思考（thinking）**流。朴素的 benchmark 要么：
+市面上多数 LLM 测速工具只报一个"tokens/sec"和一个"TTFT"。但这对 **推理模型**（DeepSeek、Kimi、GLM、Doubao……）会失效——它们在给出可见答案前，会先输出一大段隐藏的 **思考（thinking）** 流。朴素的 benchmark 要么：
 
 - 把思考 token 也算成输出（**虚高 TPS**），要么
-- 把 TTFT 测到第一个**思考** token（**掩盖真实的"看到答案"耗时**），要么
+- 把 TTFT 测到第一个 **思考** token（掩盖了真实的"看到答案"耗时），要么
 - 在提供方流式不回传 `usage` 时直接失灵（**DeepSeek 官方流式就不回 usage**）。
 
 modelbench 用三个测量设计解决这些问题：
