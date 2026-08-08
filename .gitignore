@@ -1,0 +1,23 @@
+# secrets — never commit
+env
+.env
+*.local
+config.yaml   # your real endpoints/keys live here; commit only config.example.yaml
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# benchmark artifacts (large / regenerated)
+results/*.jsonl
+results/*.log
+results/*.png
+# keep generated reports out of git by default; copy the ones you want to share to docs/
+results/report_*.md
+
+.pytest_cache/
+.ruff_cache/

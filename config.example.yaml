@@ -1,0 +1,54 @@
+# modelbench endpoints. API keys are read from env (never stored here).
+# Each endpoint must speak the OpenAI **Responses API**: POST {base_url}/responses, stream=true.
+#
+# Fields:
+#   group:    free-form label for side-by-side comparison (e.g. official | hosted | router)
+#   vendor:   provider family (informational)
+#   env_key:  name of the env var holding the API key for this endpoint
+#   models:   model ids passed to the `model` field of the Responses request
+#
+# Copy config.example.yaml -> config.yaml and edit. This file is git-ignored by default
+# so you can keep private endpoints/keys out of version control.
+
+defaults:
+  repeats: 10            # measured repeats per (endpoint, model, case)
+  warmup: 1              # warmup request per (endpoint, model) before measuring
+  timeout_s: 180
+  temperature: 0.0       # keeps output length comparable across models
+  max_output_tokens_cap: 32768
+  model_concurrency: 3   # concurrent models per endpoint (distinct backends; repeats stay serial)
+
+endpoints:
+  # --- examples: official direct ---
+  - name: deepseek-official
+    group: official
+    vendor: deepseek
+    base_url: https://api.deepseek.com/v1
+    env_key: DEEPSEEK_API_KEY
+    models: [deepseek-v4-flash, deepseek-v4-pro]
+
+  - name: kimi-official
+    group: official
+    vendor: kimi
+    base_url: https://api.moonshot.cn/v1
+    env_key: MOONSHOT_API_KEY
+    models: [kimi-k3]
+
+  - name: minimax-official
+    group: official
+    vendor: minimax
+    base_url: https://api.minimaxi.com/v1
+    env_key: MINIMAX_API_KEY
+    models: [minimax-m3]
+
+  # --- example: an OpenAI-Responses-compatible gateway / router / hosted plan ---
+  # Point base_url at any Responses-compatible endpoint and set its env_key.
+  - name: hosted-plan
+    group: hosted
+    vendor: various
+    base_url: https://YOUR-HOSTED-ENDPOINT/v1
+    env_key: HOSTED_API_KEY
+    models:
+      - glm-5.2
+      - deepseek-v4-flash
+      - minimax-m3
