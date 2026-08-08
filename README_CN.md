@@ -1,6 +1,6 @@
 # modelbench
 
-> 一个**对推理模型友好（reasoning-aware）**的 LLM 性能 benchmark，统一走 **OpenAI Responses API**。
+> 一个 **reasoning-aware（对推理模型友好）** 的 LLM 性能 benchmark，统一走 **OpenAI Responses API**。
 
 在任何 Responses 兼容端点上——官方直连 API、托管套餐、路由器/网关——用**同一份负载**测量 **TTFT、解码 TPS、端到端延迟、可靠性、prompt 缓存效果、reasoning effort 档位**，因此结果可横向对比。
 
