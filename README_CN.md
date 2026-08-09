@@ -4,7 +4,7 @@
 
 在任何 Responses 兼容端点上——官方直连 API、托管套餐、路由器/网关——用**同一份负载**测量 **TTFT、解码 TPS、端到端延迟、可靠性、prompt 缓存效果、reasoning effort 档位**，因此结果可横向对比。
 
-[English](README.md) | 中文
+[English](README.md) | 中文 · [方法论](METHODOLOGY_CN.md)
 
 ## 为什么做这个
 
@@ -72,6 +72,39 @@ uv run python -m modelbench.cli report --results results/raw_<ts>.jsonl --effort
 # 审计结果文件的数据质量
 uv run python -m modelbench.audit results/raw_<ts>.jsonl
 ```
+
+## 快速上手：测一个新模型
+
+最常见的任务——测单个新模型的 TTFT/TPS：
+
+```bash
+# 1. 在 config.yaml 对应 endpoint 的 models 里加上新模型 id
+# 2. probe 探测（便宜，确认 endpoint/模型可用）
+uv run python -m modelbench.cli probe --endpoints deepseek-official --models <新模型id>
+
+# 3. 快速测（3 repeats × M case），先看大概
+uv run python -m modelbench.cli run --endpoints deepseek-official --models <新模型id> \
+  --cases M --repeats 3 --report --out results/<新模型id>.jsonl
+
+# 4. 要正式数据就跑全量（所有 case × 10 repeats）
+uv run python -m modelbench.cli run --endpoints deepseek-official --models <新模型id> --report
+```
+
+加的是**全新 provider**（不只是模型）？在 `config.yaml` 加一个 `endpoints:` 块（参考 `config.example.yaml`），把它的 key 放进 `.env` / `.model_accounts`，然后 `probe` → `run`。
+
+### 该看哪个数字
+
+报告里这两列都要看：
+
+| 列 | 含义 |
+|---|---|
+| **解码 TPS** | 纯吐字速率（chunk 计时，排除思考）——最稳定、可对比的数字 |
+| **端到端 TPS** | 含首延迟的总吞吐——最接近体感 |
+| **首正文 TTFT** | 到首个**可见答案** token 的耗时（推理模型=思考完之后）——用户真实感受 |
+
+对**推理模型**，首响应 TTFT（开始思考）和首正文 TTFT（开始给答案）差距很大，别混为一谈。
+
+指标怎么算的、数据质量审计怎么看，见 **[METHODOLOGY.md](METHODOLOGY.md)**。
 
 ## 负载档位
 

@@ -2,7 +2,7 @@
 
 A reasoning-aware LLM performance benchmark over the **OpenAI Responses API**.
 
-English | [中文](README_CN.md)
+English | [中文](README_CN.md) · [Methodology](METHODOLOGY.md)
 
 Measures **TTFT, decode TPS, end-to-end latency, reliability, prompt-caching effect, and reasoning-effort tiers** across any Responses-compatible endpoint — official provider APIs, hosted plans, and routers/gateways — with the same workload, so numbers are comparable.
 
@@ -72,6 +72,39 @@ uv run python -m modelbench.cli report --results results/raw_<ts>.jsonl --effort
 # audit data quality of a results file
 uv run python -m modelbench.audit results/raw_<ts>.jsonl
 ```
+
+## Quickstart: benchmarking a new model
+
+The most common task — measure TTFT/TPS for one new model:
+
+```bash
+# 1. Add the model id under the right endpoint in config.yaml
+# 2. Probe it (cheap, confirms the endpoint/model works)
+uv run python -m modelbench.cli probe --endpoints deepseek-official --models <new-model-id>
+
+# 3. Quick measure (3 repeats × M case) to get a fast read
+uv run python -m modelbench.cli run --endpoints deepseek-official --models <new-model-id> \
+  --cases M --repeats 3 --report --out results/<new-model-id>.jsonl
+
+# 4. Full benchmark (all cases × 10 repeats) when you want the real number
+uv run python -m modelbench.cli run --endpoints deepseek-official --models <new-model-id> --report
+```
+
+Adding a **new provider** (not just a model)? Add an `endpoints:` block in `config.yaml` (see `config.example.yaml`), put its key in `.env` / `.model_accounts`, then `probe` → `run`.
+
+### Which number matters
+
+In the report, look at both:
+
+| Column | What it tells you |
+|---|---|
+| **Decode TPS** | pure token emission rate (chunk-timed, excludes thinking) — the most stable, comparable number |
+| **End-to-end TPS** | throughput over total time, including first-token latency — closest to perceived speed |
+| **First-content TTFT** | time to the first *visible* answer token (for reasoning models: after thinking) — what users actually feel |
+
+For **reasoning models**, first-response TTFT (start of thinking) and first-content TTFT (start of answer) differ a lot — don't conflate them.
+
+See **[METHODOLOGY.md](METHODOLOGY.md)** for how metrics are computed and how to read the data-quality audit.
 
 ## Workloads
 
