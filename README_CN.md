@@ -4,7 +4,7 @@
 
 在任何 Responses 兼容端点上——官方直连 API、托管套餐、路由器/网关——用**同一份负载**测量 **TTFT、解码 TPS、端到端延迟、可靠性、prompt 缓存效果、reasoning effort 档位**，因此结果可横向对比。
 
-[English](README.md) | 中文 · [方法论](METHODOLOGY_CN.md)
+[English](README.md) | 中文 · [指标与方法论](docs/metrics_cn.md)
 
 ## 为什么做这个
 
@@ -104,7 +104,7 @@ uv run python -m modelbench.cli run --endpoints deepseek-official --models <新�
 
 对**推理模型**，首响应 TTFT（开始思考）和首正文 TTFT（开始给答案）差距很大，别混为一谈。
 
-指标怎么算的、数据质量审计怎么看，见 **[METHODOLOGY.md](METHODOLOGY.md)**。
+指标怎么算的、数据质量审计怎么看，见 **[docs/metrics_cn.md](docs/metrics_cn.md)**。
 
 ## 负载档位
 

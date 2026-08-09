@@ -1,8 +1,8 @@
 # 方法论（Methodology）
 
-[English](METHODOLOGY.md) | [中文](METHODOLOGY_CN.md)
+[English](metrics.md) | [中文](metrics_cn.md)
 
-modelbench 怎么测、为什么这么测。本文讲"为什么"，用法见 [README](README_CN.md)，完整样例见 [examples/](examples/)。
+modelbench 怎么测、为什么这么测。本文讲"为什么"，用法见 [README](../README_CN.md)，完整样例见 [examples/](../examples/)。
 
 ## 这个工具解决什么问题
 

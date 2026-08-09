@@ -1,8 +1,8 @@
 # Methodology
 
-[English](METHODOLOGY.md) | [中文](METHODOLOGY_CN.md)
+[English](metrics.md) | [中文](metrics_cn.md)
 
-How modelbench measures LLM performance, and why. This is the "why" behind the numbers — for usage see [README](README.md). For a worked example see [examples/](examples/).
+How modelbench measures LLM performance, and why. This is the "why" behind the numbers — for usage see [README](../README.md). For a worked example see [examples/](../examples/).
 
 ## The problem this solves
 
