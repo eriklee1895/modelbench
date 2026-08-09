@@ -2,7 +2,9 @@
 env
 .env
 *.local
-config.yaml   # your real endpoints/keys live here; commit only config.example.yaml
+# your real endpoints/keys live here; commit only config.example.yaml
+config.yaml
+.model_accounts
 
 # python
 __pycache__/
@@ -21,4 +23,3 @@ results/report_*.md
 
 .pytest_cache/
 .ruff_cache/
-.model_accounts
