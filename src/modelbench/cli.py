@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from copy import replace
 from pathlib import Path
 
 from .config import load_config, load_env_file
@@ -24,13 +25,16 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _load_env(env_path: str | None) -> None:
-    # priority: explicit --env > ./env > ./.env. Keys can also just be exported.
+    # priority: explicit --env > ./.env > ./env > ./.model_accounts.
+    # Keys can also just be exported in the shell. All these filenames are
+    # git-ignored; the convention is generic (no project-specific paths).
     candidates = []
     if env_path:
         candidates.append(Path(env_path))
     candidates += [
-        ROOT / "env",
         ROOT / ".env",
+        ROOT / "env",
+        ROOT / ".model_accounts",
     ]
     for c in candidates:
         if c.exists():
@@ -87,13 +91,21 @@ def cmd_report(args: argparse.Namespace) -> None:
 def cmd_probe(args: argparse.Namespace) -> None:
     _load_env(args.env)
     config = load_config(_resolve_config(args.config))
+    only_eps = set(args.endpoints.split(",")) if args.endpoints else None
+    only_models = set(args.models.split(",")) if args.models else None
 
     async def _go() -> None:
         for ep in config.endpoints:
+            if only_eps and ep.name not in only_eps:
+                continue
             if not ep.api_key:
                 print(f"[skip] {ep.name}: missing env {ep.env_key}")
                 continue
-            res = await probe_endpoint(ep, config.defaults.timeout_s)
+            models = [m for m in ep.models if not only_models or m in only_models]
+            if not models:
+                continue
+            sub = replace(ep, models=models)
+            res = await probe_endpoint(sub, config.defaults.timeout_s)
             for m, err in res.items():
                 tag = "ok" if err is None else f"FAIL ({err})"
                 print(f"  {ep.name:18s} {m:28s} {tag}")
@@ -147,6 +159,8 @@ def main() -> None:
     pp.set_defaults(fn=cmd_report)
 
     pj = sub.add_parser("probe", help="probe endpoint/model availability only")
+    pj.add_argument("--endpoints", default=None, help="comma-separated endpoint names")
+    pj.add_argument("--models", default=None, help="comma-separated model ids")
     pj.set_defaults(fn=cmd_probe)
 
     pe = sub.add_parser("effort", help="sweep reasoning effort tiers (low/medium/high)")
