@@ -31,17 +31,22 @@ async def probe_endpoint(endpoint: Endpoint, request_timeout_s: float) -> dict[s
     Returns {model: None} if ok, {model: reason} if not.
     """
     out: dict[str, str | None] = {}
-    client = AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key, timeout=request_timeout_s, max_retries=0)
-    for model in endpoint.models:
-        try:
-            stream = await client.responses.create(
-                model=model, input="ping", max_output_tokens=16, stream=True
-            )
-            async for _ in stream:
-                pass
-            out[model] = None
-        except Exception as exc:
-            out[model] = f"{type(exc).__name__}: {exc}"[:200]
+    async with AsyncOpenAI(
+        base_url=endpoint.base_url,
+        api_key=endpoint.api_key,
+        timeout=request_timeout_s,
+        max_retries=0,
+    ) as client:
+        for model in endpoint.models:
+            try:
+                stream = await client.responses.create(
+                    model=model, input="ping", max_output_tokens=16, stream=True
+                )
+                async for _ in stream:
+                    pass
+                out[model] = None
+            except Exception as exc:
+                out[model] = f"{type(exc).__name__}: {exc}"[:200]
     return out
 
 
@@ -100,21 +105,27 @@ async def run_matrix(
         if probe and probe_results.get(ep.name, {}).get(model) is not None:
             print(f"[skip-model] {ep.name}/{model}: probe failed")
             return
-        fresh = {w.case: copy.deepcopy(w) for w in workloads}
-        for _ in range(config.defaults.warmup):
-            w = fresh.get("S") or next(iter(fresh.values()))
-            w.model = model
-            await run_once(ep, w, config.defaults, rep=-1)
-        for case in cases:
-            w = fresh[case]
-            w.model = model
-            for rep in range(config.defaults.repeats):
-                r = await run_once(ep, w, config.defaults, rep=rep)
-                await emit(r)
-                status = "ok" if r.success else f"ERR:{r.error_type}"
-                ttft = f"{(r.ttft_content_s or r.ttft_s or 0) * 1000:.0f}ms" if (r.ttft_content_s or r.ttft_s) else "-"
-                tps = f"{r.output_tps:.1f}" if r.output_tps else "-"
-                print(f"  {ep.name:14s} {model:24s} {case:5s} rep{rep} {status:14s} ttft={ttft:>8s} tps={tps:>7s}")
+        async with AsyncOpenAI(
+            base_url=ep.base_url,
+            api_key=ep.api_key,
+            timeout=config.defaults.timeout_s,
+            max_retries=0,
+        ) as client:
+            fresh = {w.case: copy.deepcopy(w) for w in workloads}
+            for _ in range(config.defaults.warmup):
+                w = fresh.get("S") or next(iter(fresh.values()))
+                w.model = model
+                await run_once(ep, w, config.defaults, rep=-1, client=client)
+            for case in cases:
+                w = fresh[case]
+                w.model = model
+                for rep in range(config.defaults.repeats):
+                    r = await run_once(ep, w, config.defaults, rep=rep, client=client)
+                    await emit(r)
+                    status = "ok" if r.success else f"ERR:{r.error_type}"
+                    ttft = f"{(r.ttft_content_s or r.ttft_s or 0) * 1000:.0f}ms" if (r.ttft_content_s or r.ttft_s) else "-"
+                    tps = f"{r.output_tps:.1f}" if r.output_tps else "-"
+                    print(f"  {ep.name:14s} {model:24s} {case:5s} rep{rep} {status:14s} ttft={ttft:>8s} tps={tps:>7s}")
 
     async def run_endpoint(ep: Endpoint) -> None:
         """Run an endpoint's models. Distinct models map to distinct backend
@@ -146,6 +157,81 @@ def read_results(path: Path) -> list[RunResult]:
     return rows
 
 
+async def retry_failed(
+    config: Config,
+    workloads: list[Workload],
+    source_path: Path,
+    out_path: Path,
+) -> int:
+    """Replace failed measured rows with fresh attempts in a new JSONL file."""
+    raw_text = await asyncio.to_thread(source_path.read_text)
+    raw_rows = [json.loads(line) for line in raw_text.splitlines() if line.strip()]
+    endpoint_by_name = {ep.name: ep for ep in config.resolved_endpoints()}
+    workload_by_case = {w.case: w for w in workloads}
+    groups: dict[tuple[str, str], list[dict]] = {}
+    retry_row_ids: set[int] = set()
+
+    for row_id, row in enumerate(raw_rows):
+        if row.get("rep", 0) < 0 or row.get("success") is True:
+            continue
+        endpoint = endpoint_by_name.get(row.get("endpoint"))
+        workload = workload_by_case.get(row.get("case"))
+        if endpoint is None or workload is None:
+            print(f"[retry-skip] {row.get('endpoint')}/{row.get('model')} {row.get('case')}: target unavailable")
+            continue
+        retry_row_ids.add(row_id)
+        groups.setdefault((endpoint.name, row["model"]), []).append(row)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", buffering=1) as fp:
+        for row_id, row in enumerate(raw_rows):
+            if row_id not in retry_row_ids:
+                fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    if not groups:
+        print(f"[retry] no retryable failed rows; copied {source_path} to {out_path}")
+        return 0
+
+    write_lock = asyncio.Lock()
+
+    async def emit(r: RunResult) -> None:
+        r.derive()
+        async with write_lock:
+            with out_path.open("a", buffering=1) as fp:
+                fp.write(json.dumps(r.to_row(), ensure_ascii=False) + "\n")
+
+    sem = asyncio.Semaphore(config.defaults.model_concurrency)
+
+    async def retry_group(endpoint_name: str, model: str, rows: list[dict]) -> None:
+        endpoint = endpoint_by_name[endpoint_name]
+        async with sem:
+            async with AsyncOpenAI(
+                base_url=endpoint.base_url,
+                api_key=endpoint.api_key,
+                timeout=config.defaults.timeout_s,
+                max_retries=0,
+            ) as client:
+                for row in rows:
+                    workload = copy.deepcopy(workload_by_case[row["case"]])
+                    workload.model = model
+                    workload.effort = row.get("effort")
+                    result = await run_once(
+                        endpoint,
+                        workload,
+                        config.defaults,
+                        rep=row["rep"],
+                        client=client,
+                    )
+                    result.retried = True
+                    await emit(result)
+                    status = "ok" if result.success else f"ERR:{result.error_type}"
+                    print(f"  {endpoint_name:14s} {model:24s} {row['case']:5s} rep{row['rep']} {status}")
+
+    await asyncio.gather(*(retry_group(ep, model, rows) for (ep, model), rows in groups.items()))
+    print(f"\n[retry] replaced {len(retry_row_ids)} failed rows; wrote {out_path}")
+    return len(retry_row_ids)
+
+
 async def effort_sweep(
     config: Config,
     base_workload: Workload,
@@ -173,21 +259,27 @@ async def effort_sweep(
     tiers = ["default", *efforts]  # default = no reasoning param
 
     async def run_one(ep: Endpoint, model: str) -> None:
-        for eff in tiers:
-            w = copy.deepcopy(base_workload)
-            w.model = model
-            w.effort = None if eff == "default" else eff
-            w.case = f"{base_workload.case}@{eff}"
-            for rep in range(repeats):
-                r = await run_once(ep, w, config.defaults, rep=rep)
-                await emit(r)
-                rr = (r.usage.output_tokens or 0) - (r.usage.content_tokens or 0)
-                ttft = (r.ttft_content_s or r.ttft_s or 0) * 1000
-                print(
-                    f"  {model:22s} {w.case:12s} rep{rep} "
-                    f"{'ok' if r.success else 'ERR'} reasoning={rr} content={r.usage.content_tokens} "
-                    f"ttft_content={ttft:.0f}ms tps={r.output_tps and round(r.output_tps, 1)}"
-                )
+        async with AsyncOpenAI(
+            base_url=ep.base_url,
+            api_key=ep.api_key,
+            timeout=config.defaults.timeout_s,
+            max_retries=0,
+        ) as client:
+            for eff in tiers:
+                w = copy.deepcopy(base_workload)
+                w.model = model
+                w.effort = None if eff == "default" else eff
+                w.case = f"{base_workload.case}@{eff}"
+                for rep in range(repeats):
+                    r = await run_once(ep, w, config.defaults, rep=rep, client=client)
+                    await emit(r)
+                    rr = (r.usage.output_tokens or 0) - (r.usage.content_tokens or 0)
+                    ttft = (r.ttft_content_s or r.ttft_s or 0) * 1000
+                    print(
+                        f"  {model:22s} {w.case:12s} rep{rep} "
+                        f"{'ok' if r.success else 'ERR'} reasoning={rr} content={r.usage.content_tokens} "
+                        f"ttft_content={ttft:.0f}ms tps={r.output_tps and round(r.output_tps, 1)}"
+                    )
 
     # group reasoning models by endpoint
     for ep in config.resolved_endpoints():
@@ -234,3 +326,8 @@ def completed_models(path: Path, n_cases: int = 6, min_rows: int = 8) -> set[str
 def new_results_path(results_dir: Path) -> Path:
     ts = time.strftime("%Y%m%d_%H%M%S")
     return results_dir / f"raw_{ts}.jsonl"
+
+
+def new_retry_path(results_dir: Path) -> Path:
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return results_dir / f"retry_{ts}.jsonl"

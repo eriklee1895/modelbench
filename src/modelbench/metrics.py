@@ -31,7 +31,7 @@ class Stats:
     tps_p95: float | None
     tps_std: float | None
     e2e_tps_p50: float | None
-    decode_tps_p50: float | None  # authoritative chunk-timing decode rate
+    decode_tps_p50: float | None  # client-observed chunk-timing rate
     decode_tps_p95: float | None
     # tokens
     out_tokens_p50: float | None
@@ -71,17 +71,18 @@ def aggregate(results: list[RunResult]) -> list[Stats]:
     out: list[Stats] = []
     for (endpoint, group, vendor, model, case), rs in sorted(groups.items()):
         ok = [r for r in rs if r.success]
-        ttfts = [r.ttft_s for r in ok if r.ttft_s is not None]
-        ttftc = [r.ttft_content_s for r in ok if r.ttft_content_s is not None]
-        reas = [r.reasoning_ttft_s for r in ok if r.reasoning_ttft_s is not None]
+        metric_ok = [r for r in ok if not r.retried] or ok
+        ttfts = [r.ttft_s for r in metric_ok if r.ttft_s is not None]
+        ttftc = [r.ttft_content_s for r in metric_ok if r.ttft_content_s is not None]
+        reas = [r.reasoning_ttft_s for r in metric_ok if r.reasoning_ttft_s is not None]
         is_reasoning = len(reas) > 0
-        e2es = [r.e2e_s for r in ok if r.e2e_s is not None]
-        tps = [r.output_tps for r in ok if r.output_tps is not None]
-        e2e_tps = [r.e2e_tps for r in ok if r.e2e_tps is not None]
-        decode = [r.decode_tps for r in ok if r.decode_tps is not None]
-        outtok = [float(r.usage.output_tokens) for r in ok if r.usage.output_tokens is not None]
-        cached = [float(r.usage.cached_tokens) for r in ok if r.usage.cached_tokens is not None]
-        tool_ttft = [r.tool_call_ttft_s for r in ok if r.tool_call_ttft_s is not None]
+        e2es = [r.e2e_s for r in metric_ok if r.e2e_s is not None]
+        tps = [r.output_tps for r in metric_ok if r.output_tps is not None]
+        e2e_tps = [r.e2e_tps for r in metric_ok if r.e2e_tps is not None]
+        decode = [r.decode_tps for r in metric_ok if r.decode_tps is not None]
+        outtok = [float(r.usage.output_tokens) for r in metric_ok if r.usage.output_tokens is not None]
+        cached = [float(r.usage.cached_tokens) for r in metric_ok if r.usage.cached_tokens is not None]
+        tool_ttft = [r.tool_call_ttft_s for r in metric_ok if r.tool_call_ttft_s is not None]
         tool_valid = [r.tool_call_valid for r in rs if r.tool_call_valid is not None]
         src = "api" if any(r.usage.source == "api" for r in ok) else "est"
         out.append(
@@ -135,7 +136,9 @@ def cache_analysis(results: list[RunResult]) -> list[dict]:
 
     rows: list[dict] = []
     for (endpoint, model), rs in sorted(groups.items()):
-        rs = sorted([r for r in rs if r.success and _eff_ttft(r) is not None], key=lambda r: r.rep)
+        successful = [r for r in rs if r.success and _eff_ttft(r) is not None]
+        clean = [r for r in successful if not r.retried] or successful
+        rs = sorted(clean, key=lambda r: r.rep)
         if not rs:
             continue
         first = _eff_ttft(rs[0])
@@ -173,11 +176,12 @@ def effort_analysis(results: list[RunResult]) -> list[dict]:
 
     rows: list[dict] = []
     for (endpoint, model, eff), rs in sorted(groups.items()):
-        reas = [(r.usage.output_tokens or 0) - (r.usage.content_tokens or 0) for r in rs]
-        cont = [r.usage.content_tokens for r in rs if r.usage.content_tokens is not None]
-        ttft = [(r.ttft_content_s or r.ttft_s) * 1000 for r in rs if (r.ttft_content_s or r.ttft_s)]
-        tps = [r.output_tps for r in rs if r.output_tps]
-        e2e = [r.e2e_s for r in rs if r.e2e_s]
+        metric_rs = [r for r in rs if not r.retried] or rs
+        reas = [(r.usage.output_tokens or 0) - (r.usage.content_tokens or 0) for r in metric_rs]
+        cont = [r.usage.content_tokens for r in metric_rs if r.usage.content_tokens is not None]
+        ttft = [(r.ttft_content_s or r.ttft_s) * 1000 for r in metric_rs if (r.ttft_content_s or r.ttft_s)]
+        tps = [r.output_tps for r in metric_rs if r.output_tps]
+        e2e = [r.e2e_s for r in metric_rs if r.e2e_s]
         rows.append(
             {
                 "endpoint": endpoint,

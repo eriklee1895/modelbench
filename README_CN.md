@@ -16,7 +16,7 @@
 
 modelbench 用三个测量设计解决这些问题：
 
-1. **chunk 计时解码 TPS** —— `正文token / (末正文chunk − 首正文chunk)`。解码窗口从第一个**可见** token 起算，天然不受 usage 缺失和思考长度波动影响。
+1. **chunk 计时解码 TPS** —— `(正文估算 token − 首个正文 chunk token) / (末正文chunk − 首正文chunk)`。首个已抵达 chunk 的生成发生在首个客户端时间戳之前，因此将它排除，短输出的结果更保守。
 2. **TTFT 拆两档** —— **首响应 TTFT**（开始思考）vs **首正文 TTFT**（开始给答案）。对 Agent，后者才是用户真实体感。
 3. **reasoning effort 档位扫描** —— 每个模型跑 `low / medium / high` 三档，量化"思考更久"的延迟代价（并验证解码 TPS 几乎不变——代价全在 TTFT）。
 
@@ -68,6 +68,9 @@ uv run python -m modelbench.cli effort --case M --efforts low,medium,high
 
 # 从已有结果文件出报告
 uv run python -m modelbench.cli report --results results/raw_<ts>.jsonl --effort results/effort.jsonl
+
+# 只重跑失败行，并生成替换失败行后的合并结果/报告
+uv run python -m modelbench.cli retry --results results/raw_<ts>.jsonl --model-concurrency 1 --report
 
 # 审计结果文件的数据质量
 uv run python -m modelbench.audit results/raw_<ts>.jsonl
@@ -123,7 +126,7 @@ uv run python -m modelbench.cli run --endpoints deepseek-official --models <新�
 
 ## 方法论与注意事项
 
-- 同一（模型， case）内**串行**请求；不同模型**并发**（打的是不同后端）。每个 endpoint 有信号量限制并发，避免触发限流——否则限流会被误记成 TTFT 虚高。
+- 同一（模型， case）内**串行**请求；默认不同模型**并发**。如果多个模型可能共享网关或配额，可用 `--model-concurrency 1` 做严格单飞测量，避免排队延迟混入 TTFT。
 - 推理模型可能把整个输出预算耗在思考上导致正文为空；modelbench 会加输出余量，并拆分正文/思考 token，让这种情况**可见而非静默**。
 - 单一"综合速度分"会误导（一个模型可能吞吐第一但要 50s 才开始作答）。报告因此把**吞吐优先**和**响应优先**分开评分。
 - 结果是**某一时刻**的快照，且受提供方侧波动影响。**方法可复用，数字会过时**——请把本仓库当工具用，把 examples 里的数字当带日期的样例看。

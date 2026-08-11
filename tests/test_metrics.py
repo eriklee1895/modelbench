@@ -52,6 +52,20 @@ def test_aggregate_success_rate():
     assert s.ttft_p50 is not None
 
 
+def test_aggregate_excludes_retried_latency_when_clean_sample_exists():
+    clean = _mk(success=True, ttft_s=1.0, e2e_s=2.0)
+    retried = _mk(success=True, ttft_s=0.1, e2e_s=0.2)
+    retried.retried = True
+    for r in (clean, retried):
+        r.usage = TokenUsage(output_tokens=10, content_tokens=10)
+        r.derive()
+
+    stats = aggregate([clean, retried])
+
+    assert stats[0].n_success == 2
+    assert stats[0].ttft_p50 == 1.0
+
+
 def test_cache_analysis_detects_hit():
     rs = [
         _mk(case="cache", rep=0, success=True, ttft_s=1.0),

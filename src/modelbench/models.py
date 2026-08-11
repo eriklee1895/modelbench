@@ -42,12 +42,13 @@ class RunResult:
     # throughput (derived; None until computed)
     output_tps: float | None = None  # output_tokens / (e2e - ttft)
     e2e_tps: float | None = None  # output_tokens / e2e
-    # chunk-timing decode rate (authoritative TPS): content tokens / (last - first
-    # content delta). Immune to missing usage and to thinking-length variance,
-    # because the decode window starts at the first content chunk by construction.
+    # chunk-timing decode rate: tokens after the first content chunk divided by
+    # the observed inter-chunk window. The first chunk is excluded because its
+    # generation happened before the first client-observed timestamp.
     decode_tps: float | None = None
     decode_window_s: float | None = None  # last - first content delta
-    content_chunk_tokens: int | None = None  # tiktoken count over content text
+    content_chunk_tokens: int | None = None  # estimated tokens over content text
+    first_content_chunk_tokens: int | None = None
 
     usage: TokenUsage = field(default_factory=TokenUsage)
 
@@ -104,6 +105,7 @@ class RunResult:
             "decode_tps": self.decode_tps,
             "decode_window_s": self.decode_window_s,
             "content_chunk_tokens": self.content_chunk_tokens,
+            "first_content_chunk_tokens": self.first_content_chunk_tokens,
             "input_tokens": self.usage.input_tokens,
             "output_tokens": self.usage.output_tokens,
             "content_tokens": self.usage.content_tokens,
@@ -141,6 +143,7 @@ class RunResult:
         r.decode_tps = row.get("decode_tps")
         r.decode_window_s = row.get("decode_window_s")
         r.content_chunk_tokens = row.get("content_chunk_tokens")
+        r.first_content_chunk_tokens = row.get("first_content_chunk_tokens")
         r.usage = TokenUsage(
             input_tokens=row.get("input_tokens"),
             output_tokens=row.get("output_tokens"),

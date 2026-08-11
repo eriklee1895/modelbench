@@ -16,17 +16,18 @@ modelbench is designed around these realities.
 
 ## Core measurements
 
-### Decode TPS (the authoritative speed number)
+### Decode TPS (observed inter-chunk speed)
 
 ```
-decode_tps = content_tokens / (last_content_chunk_time − first_content_chunk_time)
+decode_tps = tokens_after_first_content_chunk / (last_content_chunk_time − first_content_chunk_time)
 ```
 
 - Tokens are **content (visible answer) tokens only** — thinking tokens are excluded.
-- The decode window starts at the **first visible content chunk by construction**, so thinking time is never in the denominator.
-- Timing comes from **per-chunk arrival timestamps**, not from `usage` — so it works even when the provider doesn't return usage in streaming mode.
+- Tokens in the first arrived content chunk are excluded because their generation happened before the first client-observed timestamp.
+- The numerator uses `cl100k_base` over the visible text, so it is an estimate for providers with a different tokenizer.
+- Timing comes from **per-chunk arrival timestamps**, not from `usage` — so it still works when the provider doesn't return usage in streaming mode.
 
-This makes decode TPS the most stable, comparable number across providers. It answers "once the model starts answering, how fast does it emit text?"
+This makes decode TPS a useful client-observed comparison across providers. It answers "after the first visible chunk, how fast does the stream continue arriving?" It is not a provider-side token-generation rate.
 
 ### First-response TTFT vs first-content TTFT
 
@@ -89,7 +90,7 @@ The `agent` workload sends a tool-rich prompt and measures time to the first `fu
 ### Experimental controls
 
 - **Serial within a (model, case)** — repeats run one after another so they don't compete for the same backend.
-- **Concurrent across models** — different models hit different backends, so this is safe; a per-endpoint semaphore bounds concurrency to avoid tripping rate limits (which would otherwise look like inflated TTFT).
+- **Concurrent across models by default** — use `--model-concurrency 1` when models may share a gateway or quota; otherwise queueing can look like inflated TTFT.
 - **10 repeats per cell**, with 1 warmup — median is the reported statistic; p95 and std are also captured.
 - **`temperature=0`** and fixed output budgets so output lengths are comparable across models.
 

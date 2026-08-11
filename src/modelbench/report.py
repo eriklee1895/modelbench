@@ -54,7 +54,7 @@ def make_charts(stats: list[Stats], out_dir: Path, stem: str) -> list[Path]:
             ax,
             [_label(s) for s in l_stats],
             [_dtps(s) for s in l_stats],
-            "解码 TPS (chunk计时纯解码速率) — case L, p50",
+            "解码 TPS (chunk间客户端观测速率) — case L, p50",
             "tokens/s",
             "#2a6de0",
         )
@@ -215,6 +215,7 @@ def make_scorecard_chart(scored: list[dict], out_dir: Path, stem: str) -> list[P
 
 
 def write_report(results_path: Path, out_dir: Path, effort_path: Path | None = None) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
     results = read_results(results_path)
     stats = aggregate(results)
     cache_rows = cache_analysis(results)
@@ -237,14 +238,14 @@ def write_report(results_path: Path, out_dir: Path, effort_path: Path | None = N
     lines.append("- 协议: 全部走 OpenAI **Responses API**（stream=true）")
     lines.append(
         "- 指标: **首响应TTFT**=首个任意输出(reasoning 模型=首思考, 普通=首正文)；**首正文TTFT**=首个可见答案 token(reasoning 模型需先想完)；"
-        "**解码TPS**=正文token/(末chunk−首chunk) 纯解码速率(chunk计时,不受思考/usage缺失影响)；**端到端TPS**=正文token/总时长(最接近体感)；E2E=请求→completed\n"
+        "**解码TPS**=首个正文chunk之后的估算token/(末chunk−首chunk) 客户端观测速率；**端到端TPS**=正文token/总时长(最接近体感)；E2E=请求→completed\n"
     )
 
     # ---- headline: case L comparison ----
     lines.append("\n## 一、核心对比（case L：in~4k / out~1k，p50）\n")
 
     def _tps(s: Stats) -> float | None:
-        # authoritative decode TPS (chunk timing); fall back to usage-derived
+        # client-observed chunk rate; fall back to usage-derived throughput
         return s.decode_tps_p50 if s.decode_tps_p50 is not None else s.tps_p50
 
     core = sorted([s for s in stats if s.case == "L"], key=lambda s: _tps(s) or 0, reverse=True)
@@ -280,8 +281,8 @@ def write_report(results_path: Path, out_dir: Path, effort_path: Path | None = N
         )
     )
     lines.append(
-        "\n> 🧠=reasoning 模型。**解码TPS**=纯解码速率（chunk计时）；**端到端TPS**=含首延迟摊薄，最接近日常体感。"
-        "deepseek 官方 flash 首正文仅 ~1.3s、几乎不思考，交互最跟手；glm-5.2 解码爆发最快但需先思考数十秒。"
+        "\n> 🧠=reasoning 模型。**解码TPS**=首个正文chunk之后的客户端观测速率（chunk计时）；**端到端TPS**=含首延迟摊薄，最接近日常体感。"
+        "具体结论以本轮表格和数据质量审计为准。"
     )
 
     # ---- 综合评分报表 (scorecard) ----
@@ -319,7 +320,7 @@ def write_report(results_path: Path, out_dir: Path, effort_path: Path | None = N
     lines.append("\n\n## 二、综合对比报表（case L）\n")
     lines.append(
         "> 双维度评分（0-100，越高越好）：**吞吐优先**=80%解码TPS+20%首正文TTFT（长文/批量生成）；**响应优先**=80%首正文TTFT+20%解码TPS（交互式 Agent，首延迟为王）。"
-        "单一分数会误导——glm-5.2 吞吐第一但首正文 56s，交互场景垫底；按需选列。\n"
+        "单一分数会误导，具体排名以本轮表格和数据质量审计为准。\n"
     )
     rows = []
     for i, r in enumerate(scored, 1):
@@ -557,31 +558,65 @@ def write_report(results_path: Path, out_dir: Path, effort_path: Path | None = N
             for s in best[:5]:
                 lines.append(f"| {_label(s)} | {_f(s.tool_ttft_p50, 0, 1000)} | {_f(s.e2e_p50, 2)} |")
 
-    lines.append("\n### 关键结论（本轮实测，TPS 为 chunk 计时纯解码速率）\n")
-    lines.append(
-        """
-0. **"TPS 最快"取决于口径，且随输入长度变化**：**纯解码 TPS**（开始输出后的速率）glm-5.2 爆发最强（case M 实测 944 tok/s，但思考久才到正文）；**首正文延迟**在**短/中输入**下 deepseek 官方 flash(=0731 GA) 最快（S/M 仅 1.9-2.3s、几乎不思考 ~90-140 tok、解码稳定 ~90 tok/s），这正是日常 Agent/问答"deepseek 最快"体感的来源；**长输入(XL)** 时 deepseek 思考量涨至 ~1200 tok、首正文拖到 16s，优势收窄。**结论：短-中输入交互场景 deepseek 官方 flash 流畅度第一；长输出高吞吐场景 glm-5.2 吞吐第一。**
-1. **同模型「官方直连 TPS 普遍快于 Volc Plan」**：deepseek-v4-flash 官方 ~85 vs Volc ~64（+33%），minimax-m3 官方 ~136 vs Volc ~102（+33%）。追求纯吞吐用官方；但 Volc 一个 key 通吃多家模型、部分模型 TTFT 更低，集成省心。
-2. **纯解码 TPS 断层**：glm-5.2 (case M 实测 944) > doubao-2.0-mini/lite ~150 > minimax-m3 ~136。glm-5.2 是长输出/高吞吐 Agent 的速度首选，但思考偏长（首正文 25-56s），交互式场景需权衡。
-3. **reasoning 模型 TTFT 分两档**：「首响应（开始思考）」普遍 <5s，「首正文（开始给答案）」受思考长度影响可达 30-180s。**对 Agent，真正影响体验的是首正文 TTFT + 解码 TPS**。doubao-seed-2.1-turbo 思考最不可控（随机 230~8k+ token，偶发正文被挤空），长输出任务慎用。
-4. **Reasoning 档位（见第八节）**：思考量与首正文 TTFT 随档位显著上升，但**解码 TPS 基本不变**——调高档位的代价全在延迟。**default≈high，low 才真省**：doubao-2.1-turbo 用 low 档思考量省 62%、首正文 TTFT 从 82s→37s。简单/工具编排任务应显式 `effort=low`。注意 glm-5.2、minimax-m3(Volc) 的 effort 参数被忽略（不可调思考）。
-5. **Prompt 缓存普遍生效**（15/15 检出 cached_tokens）：glm-5.2 命中 TTFT 降 80%、kimi-k2.7-code 降 52%。固定长系统提示的 Agent 应优先选缓存收益大的模型。
-6. **openai-router（gpt-5.6 系列）在长上下文（8k+）下 TTFT 随负载退化**（cache case 从 2s 劣化到 15s），共享网关排队所致；短上下文稳定。长上下文高负载场景建议直连或 Volc。
-"""
-    )
+    lines.append("\n### 关键结论（本轮实测，TPS 为客户端观测的 chunk 间速率）\n")
+    if core:
+        top_tps = core[0]
+        fastest_response = min(core, key=lambda s: _body_ttft(s) or float("inf"))
+        lines.append(
+            f"0. **case L 解码速率第一**：{_label(top_tps)}，p50 {_f(_tps(top_tps))} tok/s；"
+            f"**首正文延迟最低**：{_label(fastest_response)}，p50 {_f(_body_ttft(fastest_response), 0)} ms。"
+            "两者是不同优化目标，不能用一个数字替代。"
+        )
+    if by_model:
+        lines.append("1. **官方直连与 Volc Plan 的差异应按同模型配对表解读**，托管路径、网关排队和配额都会改变结果。")
+    reasoning_core = [s for s in core if s.is_reasoning]
+    if reasoning_core:
+        slowest_answer = max(reasoning_core, key=lambda s: _body_ttft(s) or 0)
+        lines.append(
+            f"2. **Reasoning 模型必须同时看两档 TTFT**：本轮 case L 中，{_label(slowest_answer)} 的首正文 p50 为 "
+            f"{_f(_body_ttft(slowest_answer), 0)} ms；首响应和首正文不是同一用户体验指标。"
+        )
+    if cache_rows:
+        best_cache = max(cache_rows, key=lambda r: r["ttft_drop_pct"])
+        lines.append(
+            f"3. **缓存效果以 cached_tokens 和 TTFT 降幅共同确认**：本轮最大降幅为 "
+            f"{best_cache['endpoint']}/{best_cache['model']} 的 {best_cache['ttft_drop_pct']}%。"
+        )
+    failures = [r for r in results if r.rep >= 0 and not r.success]
+    if failures:
+        lines.append(f"4. **本轮有 {len(failures)} 个失败样本**，成功率应按 case 查看；失败不会被隐藏在延迟 p50 中。")
+    if effort_rows:
+        lines.append("5. **Reasoning effort 档位**请结合思考 token、首正文 TTFT 和内容 TPS 一起判断，不能只看档位名称。")
 
     lines.append("\n### 按场景推荐\n")
-    lines.append(
-        """
-| 场景 | 推荐 | 理由 |
-|---|---|---|
-| 高吞吐长文生成 | glm-5.2 / doubao-seed-2.0-mini | 解码 TPS 944 / 150，断层领先 |
-| 交互式 Agent（要低延迟+流畅） | deepseek-v4-flash / minimax-m3（官方） | 首正文 ~1s、几乎不思考、解码稳定 85-136，最跟手 |
-| 固定长 prompt + 高频调用 | glm-5.2 / kimi-k2.7-code（Volc） | 缓存命中 TTFT 降 50-80%，省 latency+成本 |
-| 工具编排（function call 重） | deepseek-v4-flash / doubao-seed-2.0-lite | tool 首延迟 ~1s，合法性 100% |
-| 长上下文稳定生产 | 避免 openai-router 长 prompt 高并发 | 网关排队致 TTFT 退化 |
-"""
-    )
+    recommendation_rows: list[list[str]] = []
+    if core:
+        throughput_models = " / ".join(_label(s) for s in core[:2])
+        throughput_values = " / ".join(_f(_tps(s)) for s in core[:2])
+        fastest_response = min(core, key=lambda s: _body_ttft(s) or float("inf"))
+        recommendation_rows.append(
+            ["高吞吐长文生成", throughput_models, f"case L 解码 TPS p50 {throughput_values} tok/s"]
+        )
+        recommendation_rows.append(
+            ["交互式 Agent", _label(fastest_response), f"case L 首正文 TTFT p50 {_f(_body_ttft(fastest_response), 0)} ms"]
+        )
+    if cache_rows:
+        best_cache = max(cache_rows, key=lambda r: r["ttft_drop_pct"])
+        recommendation_rows.append(
+            [
+                "固定长 prompt + 高频调用",
+                f"{best_cache['endpoint']}/{best_cache['model']}",
+                f"缓存检测={best_cache['caching_detected']}，TTFT 降幅 {best_cache['ttft_drop_pct']}%",
+            ]
+        )
+    if ag:
+        tool_candidates = [s for s in ag if (s.tool_valid_rate or 0) >= 0.95 and s.tool_ttft_p50]
+        if tool_candidates:
+            tool_best = min(tool_candidates, key=lambda s: s.tool_ttft_p50 or float("inf"))
+            recommendation_rows.append(
+                ["工具编排", _label(tool_best), f"tool 首延迟 p50 {_f(tool_best.tool_ttft_p50, 0, 1000)} ms"]
+            )
+    lines.append(_md_table(["场景", "推荐", "理由"], recommendation_rows))
 
     report_path = out_dir / f"report_{stem.removeprefix('raw_')}.md"
     report_path.write_text("\n".join(lines), encoding="utf-8")

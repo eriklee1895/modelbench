@@ -1,8 +1,8 @@
 """Streaming runner: one Responses-API call, precisely timed.
 
-TTFT  = time to first `response.output_text.delta`
+TTFT  = time to first non-empty `response.output_text.delta`
 E2E   = request start -> `response.completed` (or stream end)
-TPS   = output_tokens / (E2E - TTFT)   (pure decode rate)
+TPS   = output_tokens / (E2E - TTFT)   (compatibility fallback)
 
 Reasoning models emit reasoning deltas before text; we timestamp the first
 reasoning delta and the first *content* text delta separately so the report can
@@ -32,6 +32,27 @@ def _classify_error(exc: BaseException) -> str:
     if "internal" in msg or "500" in msg or "502" in msg or "503" in msg or "server" in name:
         return "server"
     return "other"
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    """Return true for transport/gateway failures that are usually transient."""
+    error_type = _classify_error(exc)
+    if error_type in ("rate_limit", "timeout", "server"):
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "overloaded",
+            "stream_read_error",
+            "system request failed",
+            "connection reset",
+            "connection refused",
+            "temporarily unavailable",
+            "service unavailable",
+            "gateway timeout",
+        )
+    )
 
 
 def _extract_usage(final: object) -> TokenUsage:
@@ -89,6 +110,8 @@ async def run_once(
     workload: Workload,
     defaults: Defaults,
     rep: int,
+    client: AsyncOpenAI,
+    _retry_count: int = 0,
 ) -> RunResult:
     r = RunResult(
         endpoint=endpoint.name,
@@ -101,13 +124,6 @@ async def run_once(
     )
     model = getattr(workload, "model", None) or ""
     r.model = model
-
-    client = AsyncOpenAI(
-        base_url=endpoint.base_url,
-        api_key=endpoint.api_key,
-        timeout=defaults.timeout_s,
-        max_retries=0,  # we handle retry ourselves so we can record it
-    )
 
     # Reasoning models burn a large, load-independent share of the output budget on
     # thinking (doubao-seed-2.1-turbo peaks >8k tokens even on tiny prompts). Give
@@ -143,29 +159,28 @@ async def run_once(
     tool_call_seen = False
     fc_arg_parts: dict[str, list[str]] = {}  # item_id -> argument delta fragments
     fc_names: dict[str, str] = {}  # item_id -> function name
-    first_content_ts: float | None = None  # first output_text delta (decode window start)
+    first_content_ts: float | None = None  # first non-empty output_text delta
     last_content_ts: float | None = None  # last output_text delta (decode window end)
+    first_content_delta: str | None = None
     final_resp: object | None = None
     finish: str | None = None
 
     async def _attempt() -> None:
-        nonlocal final_resp, finish, saw_reasoning, tool_call_seen, first_content_ts, last_content_ts
+        nonlocal final_resp, finish, saw_reasoning, tool_call_seen, first_content_ts, last_content_ts, first_content_delta
         stream = await client.responses.create(**kwargs)
         async for event in stream:
             etype = getattr(event, "type", None)
             now = time.perf_counter()
             if etype == "response.output_text.delta":
-                delta = getattr(event, "delta", "")
-                if saw_reasoning:
-                    # reasoning model: content tokens are the real "answer" stream
-                    if r.ttft_content_s is None and delta:
-                        r.ttft_content_s = now - start
-                elif r.ttft_s is None:
-                    r.ttft_s = now - start
+                delta = getattr(event, "delta", "") or ""
                 if delta:
-                    text_parts.append(delta)
                     if first_content_ts is None:
                         first_content_ts = now
+                        first_content_delta = delta
+                        r.ttft_content_s = now - start
+                        if not saw_reasoning:
+                            r.ttft_s = r.ttft_content_s
+                    text_parts.append(delta)
                     last_content_ts = now
             elif etype and etype.startswith("response.reasoning"):
                 if not saw_reasoning:
@@ -199,35 +214,24 @@ async def run_once(
         await _attempt()
     except Exception as exc:
         etype = _classify_error(exc)
-        if etype in ("rate_limit", "timeout", "server"):
-            r.retried = True
-            # reset ALL per-attempt state so the failed attempt doesn't leak in
-            text_parts.clear()
-            fc_arg_parts.clear()
-            fc_names.clear()
-            saw_reasoning = False
-            tool_call_seen = False
-            final_resp = None
-            r.ttft_s = r.ttft_content_s = r.reasoning_ttft_s = None
-            r.tool_call_ttft_s = None
-            start = time.perf_counter()
-            try:
-                await asyncio.sleep(1.0)
-                await _attempt()
-            except Exception as exc2:
-                r.success = False
-                r.error_type = _classify_error(exc2)
-                r.error_detail = str(exc2)[:300]
-                r.e2e_s = time.perf_counter() - start
-                r.derive()
-                return r
-        else:
-            r.success = False
-            r.error_type = etype
-            r.error_detail = str(exc)[:300]
-            r.e2e_s = time.perf_counter() - start
-            r.derive()
-            return r
+        if _retry_count == 0 and _is_retryable_exception(exc):
+            await asyncio.sleep(1.0)
+            retry = await run_once(
+                endpoint,
+                workload,
+                defaults,
+                rep,
+                client,
+                _retry_count=1,
+            )
+            retry.retried = True
+            return retry
+        r.success = False
+        r.error_type = etype
+        r.error_detail = str(exc)[:300]
+        r.e2e_s = time.perf_counter() - start
+        r.derive()
+        return r
 
     if r.e2e_s is None:
         r.e2e_s = time.perf_counter() - start
@@ -247,10 +251,9 @@ async def run_once(
 
     r.output_text = "".join(text_parts)
 
-    # Authoritative decode TPS from chunk timing: independent of whether the backend
-    # returns usage, and immune to thinking-length variance (window starts at the
-    # first content chunk). Token count prefers API content_tokens; falls back to
-    # tiktoken over the content text.
+    # Decode TPS from chunk timing. Count the full text and the first chunk with
+    # one tokenizer so the numerator matches the observed timing window. This is
+    # an estimate when the provider tokenizer differs from cl100k_base.
     if first_content_ts is not None and last_content_ts is not None:
         window = last_content_ts - first_content_ts
         r.decode_window_s = window if window > 0 else None
@@ -264,16 +267,19 @@ async def run_once(
             usage.source = "est"
     r.usage = usage
 
-    # decode_tps: prefer API content_tokens; else tiktoken over content text.
+    # The first chunk already exists when its timestamp is observed, so exclude
+    # its estimated tokens from the inter-chunk decode window.
     if r.decode_window_s and r.decode_window_s > 0:
         import tiktoken
 
-        ct = usage.content_tokens
-        if ct is None:
-            ct = len(tiktoken.get_encoding("cl100k_base").encode(r.output_text)) if r.output_text else 0
+        enc = tiktoken.get_encoding("cl100k_base")
+        ct = len(enc.encode(r.output_text)) if r.output_text else 0
+        first_ct = len(enc.encode(first_content_delta or ""))
         r.content_chunk_tokens = ct
-        if ct > 0:
-            r.decode_tps = ct / r.decode_window_s
+        r.first_content_chunk_tokens = first_ct
+        decode_tokens = ct - first_ct
+        if decode_tokens > 0:
+            r.decode_tps = decode_tokens / r.decode_window_s
 
     # finish reason
     if final_resp is not None:
@@ -320,6 +326,18 @@ async def run_once(
         else:
             r.success = True
     else:
+        if _retry_count == 0:
+            await asyncio.sleep(1.0)
+            retry = await run_once(
+                endpoint,
+                workload,
+                defaults,
+                rep,
+                client,
+                _retry_count=1,
+            )
+            retry.retried = True
+            return retry
         r.success = False
         if r.error_type is None:
             r.error_type = "empty"

@@ -5,6 +5,7 @@ Usage:
                                              [--endpoints a,b] [--models x,y] [--cases S,M]
                                              [--repeats N] [--resume] [--no-probe]
     uv run python -m modelbench.cli effort   [--case M] [--efforts low,medium,high]
+    uv run python -m modelbench.cli retry    --results results/raw_<ts>.jsonl [--report]
     uv run python -m modelbench.cli report   --results results/raw_<ts>.jsonl [--effort results/effort.jsonl]
     uv run python -m modelbench.cli probe    # endpoint availability only
 """
@@ -17,7 +18,14 @@ from copy import replace
 from pathlib import Path
 
 from .config import load_config, load_env_file
-from .engine import completed_models, new_results_path, probe_endpoint, run_matrix
+from .engine import (
+    completed_models,
+    new_results_path,
+    new_retry_path,
+    probe_endpoint,
+    retry_failed,
+    run_matrix,
+)
 from .report import write_report
 from .workloads import all_workloads
 
@@ -58,6 +66,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     config = load_config(_resolve_config(args.config))
     if args.repeats:
         config.defaults.repeats = args.repeats
+    if args.model_concurrency is not None:
+        config.defaults.model_concurrency = args.model_concurrency
     out_path = Path(args.out) if args.out else new_results_path(ROOT / "results")
     skip: set[str] = set()
     if args.resume:
@@ -86,6 +96,19 @@ def cmd_report(args: argparse.Namespace) -> None:
     effort = Path(args.effort) if args.effort else None
     rp = write_report(Path(args.results), Path(args.out_dir or ROOT / "results"), effort_path=effort)
     print(f"[report] {rp}")
+
+
+def cmd_retry(args: argparse.Namespace) -> None:
+    _load_env(args.env)
+    config = load_config(_resolve_config(args.config))
+    if args.model_concurrency is not None:
+        config.defaults.model_concurrency = args.model_concurrency
+    source_path = Path(args.results)
+    out_path = Path(args.out) if args.out else new_retry_path(ROOT / "results")
+    asyncio.run(retry_failed(config, all_workloads(), source_path, out_path))
+    if args.report:
+        rp = write_report(out_path, ROOT / "results")
+        print(f"[report] {rp}")
 
 
 def cmd_probe(args: argparse.Namespace) -> None:
@@ -146,6 +169,7 @@ def main() -> None:
     pr.add_argument("--models", default=None, help="comma-separated model ids")
     pr.add_argument("--cases", default=None, help="comma-separated cases (S,M,L,XL,agent,cache)")
     pr.add_argument("--repeats", type=int, default=None)
+    pr.add_argument("--model-concurrency", type=int, default=None, help="override concurrent models per endpoint")
     pr.add_argument("--out", default=None)
     pr.add_argument("--no-probe", action="store_true")
     pr.add_argument("--resume", action="store_true", help="skip models already complete in --out file")
@@ -157,6 +181,13 @@ def main() -> None:
     pp.add_argument("--out-dir", default=None)
     pp.add_argument("--effort", default=None, help="optional effort-sweep JSONL to fold into the report")
     pp.set_defaults(fn=cmd_report)
+
+    prt = sub.add_parser("retry", help="rerun failed rows and write a merged JSONL")
+    prt.add_argument("--results", required=True, help="source raw JSONL")
+    prt.add_argument("--out", default=None, help="merged output JSONL (default: results/retry_<ts>.jsonl)")
+    prt.add_argument("--model-concurrency", type=int, default=None, help="override concurrent retry groups per endpoint")
+    prt.add_argument("--report", action="store_true", help="also write a report for the merged output")
+    prt.set_defaults(fn=cmd_retry)
 
     pj = sub.add_parser("probe", help="probe endpoint/model availability only")
     pj.add_argument("--endpoints", default=None, help="comma-separated endpoint names")

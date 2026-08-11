@@ -16,7 +16,7 @@ Most LLM latency tools report a single "tokens/sec" and a single "TTFT". That br
 
 modelbench is built around three measurement choices that fix this:
 
-1. **Chunk-timing decode TPS** — `content_tokens / (last_content_chunk − first_content_chunk)`. The decode window starts at the first *visible* token by construction, so it's immune to both missing `usage` and thinking-length variance.
+1. **Chunk-timing decode TPS** — estimated tokens after the first visible chunk / `(last_content_chunk − first_content_chunk)`. The first arrived chunk is excluded because its generation happened before the first client timestamp, keeping short-output measurements conservative.
 2. **Split TTFT** — *first-response TTFT* (model starts thinking) vs *first-content TTFT* (model starts answering). For an agent, the second is what users feel.
 3. **Reasoning-effort sweep** — runs `low / medium / high` tiers per model to show the latency cost of "thinking harder" (and that decode TPS barely changes — the cost is all in TTFT).
 
@@ -28,7 +28,7 @@ It also does a **data-quality audit** after each run (truncation, empty response
 |---|---|
 | First-response TTFT | time to first output event (first *thinking* token for reasoning models) |
 | First-content TTFT | time to first *visible answer* token |
-| **Decode TPS** | content tokens / (last−first content chunk) — pure decode rate |
+| **Decode TPS** | tokens after the first content chunk / (last−first content chunk) — observed inter-chunk rate |
 | End-to-end TPS | content tokens / total time — closest to perceived speed |
 | E2E latency | request → `response.completed` |
 | Tool-call latency | time to first `function_call` item (agent workload) |
@@ -68,6 +68,9 @@ uv run python -m modelbench.cli effort --case M --efforts low,medium,high
 
 # report from an existing results file
 uv run python -m modelbench.cli report --results results/raw_<ts>.jsonl --effort results/effort.jsonl
+
+# retry only failed rows and write a merged result/report
+uv run python -m modelbench.cli retry --results results/raw_<ts>.jsonl --model-concurrency 1 --report
 
 # audit data quality of a results file
 uv run python -m modelbench.audit results/raw_<ts>.jsonl
@@ -123,7 +126,7 @@ See **[docs/metrics.md](docs/metrics.md)** for how metrics are computed and how 
 
 ## Methodology notes & caveats
 
-- Requests within a (model, case) run **serially**; different models run concurrently (they hit distinct backends). A per-endpoint semaphore bounds concurrency to avoid tripping rate limits, which would otherwise show up as inflated TTFT.
+- Requests within a (model, case) run **serially**; the CLI supports `--model-concurrency 1` for strict single-flight measurements when endpoints may share a gateway or quota. The default semaphore bounds concurrency to avoid tripping rate limits.
 - Reasoning models can burn their entire output budget on thinking, yielding empty answers; modelbench adds output headroom and reports content vs reasoning token split so this is visible, not silent.
 - A single composite "speed score" is misleading (a model can win on throughput but take 50s to start answering). The report therefore scores **throughput-first** and **responsiveness-first** separately.
 - Results are point-in-time and provider-side variable. Treat the *method* as reusable and the *numbers* as a dated snapshot.
